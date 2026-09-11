@@ -1,0 +1,19 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  VITE_API_URL = "https://api.sentery.it.com/api"
+
+# Proxy API + MCP calls to the deployed backend (change if your Render service has a different name)
+[[redirects]]
+  from = "/api/*"
+  to = "https://api.sentery.it.com/api/:splat"
+  status = 200
+  force = true
+
+# SPA fallback so /mcp/authorize and /book/* render the app
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

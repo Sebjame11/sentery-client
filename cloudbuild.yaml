@@ -1,0 +1,62 @@
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '--build-arg'
+      - 'VITE_API_URL=https://api.${_DOMAIN}'
+      - '--build-arg'
+      - 'VITE_SUPABASE_URL=${_VITE_SUPABASE_URL}'
+      - '--build-arg'
+      - 'VITE_SUPABASE_ANON_KEY=${_VITE_SUPABASE_ANON_KEY}'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/sentery:${_TAG}'
+      - '.'
+
+  # Push to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/sentery:${_TAG}']
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'sentery'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/sentery:${_TAG}'
+      - '--region'
+      - '${_REGION}'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '3001'
+      - '--memory'
+      - '512Mi'
+      - '--min-instances'
+      - '0'
+      - '--max-instances'
+      - '10'
+      - '--set-env-vars'
+      - 'SUPABASE_URL=${_SUPABASE_URL},SUPABASE_SERVICE_ROLE_KEY=${_SUPABASE_SERVICE_ROLE_KEY},GOOGLE_CLIENT_ID=${_GOOGLE_CLIENT_ID},GOOGLE_CLIENT_SECRET=${_GOOGLE_CLIENT_SECRET},RESEND_API_KEY=${_RESEND_API_KEY},APP_URL=https://${_DOMAIN},MCP_SERVER_URL=https://api.${_DOMAIN},SYNC_SECRET=${_SYNC_SECRET},CORS_ORIGINS=https://${_DOMAIN}'
+
+substitutions:
+  _DOMAIN: your-domain.com
+  _TAG: latest
+  _REGION: asia-southeast1
+  _VITE_SUPABASE_URL: ''
+  _VITE_SUPABASE_ANON_KEY: ''
+  _SUPABASE_URL: ''
+  _SUPABASE_SERVICE_ROLE_KEY: ''
+  _GOOGLE_CLIENT_ID: ''
+  _GOOGLE_CLIENT_SECRET: ''
+  _RESEND_API_KEY: ''
+  _SYNC_SECRET: ''
+
+images:
+  - 'gcr.io/$PROJECT_ID/sentery:${_TAG}'
+
+timeout: '600s'
+options:
+  logging: CLOUD_LOGGING_ONLY
