@@ -317,14 +317,23 @@ router.post('/api/mcp/auth/consent', async (req, res) => {
 
     const { data: member } = await sb.from('workspace_members')
       .select('workspace_id').eq('user_id', user.id).eq('is_default', true).maybeSingle();
-    if (!member) return res.status(400).json({ error: 'No workspace found for this user' });
+    let workspaceId;
+    if (member) {
+      workspaceId = member.workspace_id;
+    } else {
+      const { data: fallback } = await sb.from('workspace_members')
+        .select('workspace_id').eq('user_id', user.id).order('workspace_id').limit(1).maybeSingle();
+      if (!fallback) return res.status(400).json({ error: 'No workspace found for this user' });
+      workspaceId = fallback.workspace_id;
+      await sb.from('workspace_members').update({ is_default: true }).eq('user_id', user.id).eq('workspace_id', workspaceId);
+    }
 
     const code = randToken(24);
     const { error: insertErr } = await sb.from('mcp_codes').insert({
       code_hash: sha256(code),
       client_id: client.client_id,
       user_id: user.id,
-      workspace_id: member.workspace_id,
+      workspace_id: workspaceId,
       code_challenge,
       redirect_uri: String(redirect_uri),
       scope: scope || SCOPES.join(' '),
@@ -537,8 +546,8 @@ function createSenteryServer(ctx) {
   };
   const server = new McpServer({
     name: 'sentery-mcp',
-    version: '1.8.0',
-    instructions: 'Sentery CRM tools. All tools operate on the authenticated user\'s ACTIVE workspace — it follows whichever workspace is active in the Sentery app in real time. Use list_workspaces to confirm which workspace you are in.\n\nProspects (contacts): pipeline summary, search, create, update, delete, update stage, tags. Tag contacts with update_prospect_tags (add/remove without overwriting) or create_prospect/update_prospect tags param. Stages are workspace-specific (see pipeline_summary valid_stages).\n\nDeals (company pipeline): create_company first, then create_deal. Deals have their own stage, value, priority, owner, contact, and outcome fields. log_touchpoint supports deal_id to log activity on a deal. search_deals searches across all deal fields; get_deal_timeline gives full history; merge_deals combines duplicates; bulk_update_stage moves many records at once.\n\nCompanies: search, create, update, delete, link contacts, count, tags (update_company_tags for add/remove). Use duplicate_check BEFORE creating a new company or prospect to avoid duplicates.\n\nTouchpoints: log on a prospect OR a deal. Exactly one of prospect_id or deal_id is required.\n\nCalendar events: list upcoming events, create manual events (meetings booked via Google are in list_meetings).\n\nSegments: full CRUD for BOTH contact segments and company segments (entity field). Company segments match companies by industry, size, revenue, tags, country, deal aggregates (open_deals, total_deal_value, has_open_deal) and can return all contacts under the matched companies (run_company_segment). Invalid rules now error clearly instead of matching everyone.\n\nMeetings: get_availability, create (with Google Meet link), cancel, list.\n\nInsights: pipeline_summary (contacts + deals), win_loss_summary (contacts + deals), count_companies, count_deals, daily_digest, activity_goals_status.\n\nWorkspace: info, members, add/remove members, list all workspaces.\n\nEmail: ALWAYS prefer send_gmail_email (free, better deliverability). Only use send_email (Resend) as fallback when Gmail is not connected. Emails are synced from connected Gmail — search, threads, send.\n\nApollo: people/company search, enrichment, sending.\n\nDestructive tools (delete_*, merge_deals) require confirm: true. Create meetings with get_meeting_availability first. COMPANY POLICY: create_company creates ONLY the company record — never create a prospect whose name is a company name. Contacts must be real people; only add them when you have their actual info. If no real contacts are known, leave them out and ask the user who to add. Custom stages: if a workspace has custom pipeline stages, use those IDs (pipeline_summary valid_stages returns them). Currency: deal values are returned in the workspace currency (see currency field in responses).',
+    version: '1.9.0',
+    instructions: 'Sentery CRM tools. All tools operate on the authenticated user\'s ACTIVE workspace — it follows whichever workspace is active in the Sentery app in real time. Use list_workspaces to confirm which workspace you are in.\n\nProspects (contacts): pipeline summary, search, create, update, delete, update stage, tags. Tag contacts with update_prospect_tags (add/remove without overwriting) or create_prospect/update_prospect tags param. Stages are workspace-specific (see pipeline_summary valid_stages).\n\nDeals (company pipeline): create_company first, then create_deal. Deals have their own stage, value, priority, owner, contact, and outcome fields. log_touchpoint supports deal_id to log activity on a deal. search_deals searches across all deal fields; get_deal_timeline gives full history; merge_deals combines duplicates; bulk_update_stage moves many records at once.\n\nCompanies: search, create, update, delete, link contacts, count, tags (update_company_tags for add/remove). Use duplicate_check BEFORE creating a new company or prospect to avoid duplicates.\n\nTouchpoints: log on a prospect OR a deal. Exactly one of prospect_id or deal_id is required.\n\nCalendar events: list upcoming events, create manual events (meetings booked via Google are in list_meetings).\n\nSegments: full CRUD for BOTH contact segments and company segments (entity field). create_segment builds rule-based segments; update_segment modifies name/description/rules/entity; delete_segment removes them. Company segments match companies by industry, size, revenue, tags, country, deal aggregates (open_deals, total_deal_value, has_open_deal) and can return all contacts under the matched companies (run_company_segment). Invalid rules now error clearly instead of matching everyone.\n\nMeetings: get_availability, create (with Google Meet link), cancel, list.\n\nInsights: pipeline_summary (contacts + deals), win_loss_summary (contacts + deals), count_companies, count_deals, daily_digest, activity_goals_status.\n\nWorkspace: info, members, add/remove members, list all workspaces.\n\nEmail: ALWAYS prefer send_gmail_email (free, better deliverability). Only use send_email (Resend) as fallback when Gmail is not connected. Emails are synced from connected Gmail — search, threads, send.\n\nApollo: people/company search, enrichment, sending.\n\nDestructive tools (delete_*, merge_deals) require confirm: true. Create meetings with get_meeting_availability first. COMPANY POLICY: create_company creates ONLY the company record — never create a prospect whose name is a company name. Contacts must be real people; only add them when you have their actual info. If no real contacts are known, leave them out and ask the user who to add. Custom stages: if a workspace has custom pipeline stages, use those IDs (pipeline_summary valid_stages returns them). Currency: deal values are returned in the workspace currency (see currency field in responses).',
   });
 
   // Read ───
@@ -714,7 +723,7 @@ server.tool(
           lead_source: args.lead_source || '',
           angle: null,
           notes: args.notes || '',
-          tags: (args.tags || []).map(t => String(t).trim()).filter(Boolean),
+          tags: (args.tags || []).map(t => String(t).trim()).filter(Boolean).map((name, i) => ({ name, color: ['Red','Orange','Yellow','Green','Blue','Purple','Gray'][i % 7] })),
           countries: args.countries || [],
           stage_entered_at: new Date().toISOString().slice(0, 10),
         }).select('id, name, stage').single();
@@ -785,14 +794,21 @@ server.tool(
         const entityLabel = prospect_id ? 'prospect' : 'deal';
         const entityId = prospect_id || deal_id;
         const entityCol = prospect_id ? 'prospect_id' : 'deal_id';
-        const { data, error } = await sb.from('touchpoints').insert({
+        const payload = {
           [entityCol]: entityId,
           channel,
           note,
           outcome: outcome || 'pending',
           date: new Date().toISOString().slice(0, 10),
           created_by: ctx.userId,
-        }).select('id, date, channel').single();
+          workspace_id: ctx.workspaceId,
+        };
+        let { data, error } = await sb.from('touchpoints').insert(payload).select('id, date, channel').single();
+        // If touchpoints.workspace_id is missing in schema cache, retry without it
+        if (error && error.code === 'PGRST204' && /workspace_id/i.test(error.message || '')) {
+          delete payload.workspace_id;
+          ({ data, error } = await sb.from('touchpoints').insert(payload).select('id, date, channel').single());
+        }
         if (error) throw error;
         (async () => {
           let name = null, company = null;
@@ -853,6 +869,13 @@ server.tool(
           fields.stage = await normalizeStage(fields.stage);
         }
         const updates = { ...fields };
+        if (updates.tags !== undefined) {
+          const TAG_PALETTE = ['Red','Orange','Yellow','Green','Blue','Purple','Gray'];
+          updates.tags = (Array.isArray(updates.tags) ? updates.tags : [])
+            .map(t => (t && typeof t === 'object' ? t : { name: String(t ?? '').trim(), color: null }))
+            .map((t, i) => ({ name: String(t.name || '').trim(), color: t.color || TAG_PALETTE[i % TAG_PALETTE.length] }))
+            .filter(t => t.name);
+        }
         if (updates.stage !== undefined) updates.stage_entered_at = new Date().toISOString().slice(0, 10);
         const { data, error } = await sb.from('prospects')
           .update(updates)
@@ -887,26 +910,34 @@ server.tool(
           .eq('id', prospect_id).eq('workspace_id', ctx.workspaceId).maybeSingle();
         if (qErr) throw qErr;
         if (!p) return { content: [{ type: 'text', text: 'Prospect not found in this workspace' }], isError: true };
-        const normalize = arr => (Array.isArray(arr) ? arr : [])
-          .map(t => (t && typeof t === 'object' ? t.name : t))
-          .map(t => String(t || '').trim()).filter(Boolean);
-        const current = normalize(p.tags);
-        const rm = new Set(normalize(remove_tags).map(t => t.toLowerCase()));
-        const kept = current.filter(t => !rm.has(t.toLowerCase()));
-        const existing = new Set(kept.map(t => t.toLowerCase()));
+        const toName = t => (t && typeof t === 'object' ? t.name : t);
+        const current = (Array.isArray(p.tags) ? p.tags : [])
+          .map(t => (t && typeof t === 'object' ? t : { name: String(toName(t) || '').trim(), color: null }))
+          .map(t => ({ ...t, name: String(t.name || '').trim() }))
+          .filter(t => t.name);
+        const rm = new Set((Array.isArray(remove_tags) ? remove_tags : []).map(t => String(t || '').trim().toLowerCase()).filter(Boolean));
+        const kept = current.filter(t => !rm.has(t.name.toLowerCase()));
+        const existing = new Set(kept.map(t => t.name.toLowerCase()));
         const added = [];
-        normalize(add_tags).forEach(t => {
-          if (!existing.has(t.toLowerCase())) { kept.push(t); existing.add(t.toLowerCase()); added.push(t); }
+        const TAG_PALETTE = ['Red','Orange','Yellow','Green','Blue','Purple','Gray'];
+        (Array.isArray(add_tags) ? add_tags : []).map(t => String(t || '').trim()).filter(Boolean).forEach(name => {
+          if (!existing.has(name.toLowerCase())) {
+            const color = TAG_PALETTE[kept.length % TAG_PALETTE.length];
+            kept.push({ name, color });
+            existing.add(name.toLowerCase());
+            added.push(name);
+          }
         });
-        const removedCount = current.length - kept.length + added.length === 0 ? 0 : current.filter(t => rm.has(t.toLowerCase())).length;
+        const removedCount = current.filter(t => rm.has(t.name.toLowerCase())).length;
         const { error: uErr } = await sb.from('prospects').update({ tags: kept }).eq('id', prospect_id).eq('workspace_id', ctx.workspaceId);
         if (uErr) throw uErr;
+        const names = kept.map(t => t.name);
         mcpLog({
           action: 'updated', entityType: 'prospect', entityId: p.id, entityName: p.name,
           summary: `${added.length ? 'added ' + added.join(', ') : ''}${added.length && removedCount ? ' and ' : ''}${removedCount ? 'removed ' + removedCount + ' tag' + (removedCount > 1 ? 's' : '') : ''} on ${p.name}`,
-          metadata: { tags: kept },
+          metadata: { tags: names },
         });
-        return { content: [{ type: 'text', text: `Tags updated on ${p.name}. Current tags: ${kept.length ? kept.join(', ') : 'none'}` }] };
+        return { content: [{ type: 'text', text: `Tags updated on ${p.name}. Current tags: ${names.length ? names.join(', ') : 'none'}` }] };
       } catch (err) {
         return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
       }
@@ -2876,6 +2907,37 @@ server.tool(
   );
 
   server.tool(
+    'update_segment',
+    'Update a saved segment\'s name, description, rules, or entity (contact/company). Only pass fields you want to change.',
+    {
+      segment_id: z.number().int().positive(),
+      name: z.string().optional(),
+      description: z.string().optional(),
+      entity: z.enum(['contact', 'company']).optional(),
+      rules: z.object({}).optional().describe('Rules JSON object (same shape as create_segment)'),
+    },
+    async ({ segment_id, ...fields }) => {
+      try {
+        if (Object.keys(fields).length === 0) return { content: [{ type: 'text', text: 'Provide at least one field to update' }], isError: true };
+        const updates = { ...fields, updated_at: new Date().toISOString() };
+        if (updates.rules) updates.rules = JSON.parse(JSON.stringify(updates.rules));
+        const { data, error } = await sb.from('segments').update(updates)
+          .eq('id', segment_id).eq('workspace_id', ctx.workspaceId).select('id, name, entity').single();
+        if (error) throw error;
+        if (!data) return { content: [{ type: 'text', text: 'Segment not found' }], isError: true };
+        mcpLog({
+          action: 'updated', entityType: 'segment', entityId: data.id, entityName: data.name,
+          summary: `updated segment "${data.name}"`,
+          metadata: { fields: Object.keys(fields) },
+        });
+        return { content: [{ type: 'text', text: `Updated segment ${data.id}: ${Object.keys(fields).join(', ')}` }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
+    },
+  );
+
+  server.tool(
     'delete_segment',
     'Permanently delete a saved segment.',
     { segment_id: z.number().int().positive(), confirm: z.boolean().describe('Must be true to delete') },
@@ -3015,18 +3077,19 @@ server.tool(
     {
       to: z.string().describe('Recipient email address'),
       cc: z.string().optional(),
+      bcc: z.string().optional(),
       subject: z.string(),
       body: z.string(),
       confirm: z.boolean().describe('Must be true to send'),
     },
-    async ({ to, cc, subject, body, confirm }) => {
+    async ({ to, cc, bcc, subject, body, confirm }) => {
       try {
         if (!confirm) return { content: [{ type: 'text', text: 'Sending requires confirm: true' }], isError: true };
-        const result = await sendEmailViaGmail(ctx.workspaceId, ctx.userId, { to, cc, subject, body });
+        const result = await sendEmailViaGmail(ctx.workspaceId, ctx.userId, { to, cc, bcc, subject, body });
         mcpLog({
           action: 'sent', entityType: 'email', entityId: result.emailMessageId || null, entityName: null,
           summary: `sent "${subject}" to ${to} via Gmail`,
-          metadata: { to, cc: cc || null, subject },
+          metadata: { to, cc: cc || null, bcc: bcc || null, subject },
         });
         return { content: [{ type: 'text', text: `Email sent to ${to}${result.emailMessageId ? ' and logged to the CRM' : ''}` }] };
       } catch (err) {
@@ -3090,9 +3153,5 @@ async function handleMcp(req, res) {
 
 router.post('/mcp', mcpAuth, handleMcp);
 router.get('/mcp', mcpAuth, handleMcp);
-
-// Some clients connect to the issuer URL (root) instead of /mcp after OAuth
-router.post('/', mcpAuth, handleMcp);
-router.get('/', mcpAuth, handleMcp);
 
 export { router as mcpRouter, METADATA_URL };

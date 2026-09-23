@@ -6,7 +6,7 @@ const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_R
 export async function logActivity({ workspaceId, userId = null, user_name = null, action, entityType, entityId = null, entityName = null, summary, metadata = {} }) {
   try {
     if (!workspaceId || !summary) return;
-    await sb.from('activity_log').insert({
+    const { error } = await sb.from('activity_log').insert({
       workspace_id: workspaceId,
       user_id: userId,
       user_name,
@@ -17,6 +17,7 @@ export async function logActivity({ workspaceId, userId = null, user_name = null
       summary,
       metadata,
     });
+    if (error) throw error;
   } catch (err) {
     console.warn('[activity] log skipped:', err.message);
   }
