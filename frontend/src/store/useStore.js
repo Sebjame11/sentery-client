@@ -378,67 +378,86 @@ const useStore = create((set, get) => ({
       })),
     });
 
-    // Load touchpoints for all prospects + deals (also used by refreshTouchpoints)
-    await get().refreshTouchpoints(prospectsRes.data || [], dealsRes.data || []);
-    get()._ensureTouchpointSync();
+    // Load touchpoints for all prospects + deals; always start the poller
+    try {
+      await get().refreshTouchpoints(prospectsRes.data || [], dealsRes.data || []);
+    } finally {
+      get()._ensureTouchpointSync();
+    }
   },
 
-  // Re-fetch touchpoints so MCP/AI writes appear without a full reload
+  // Re-fetch touchpoints so MCP/AI writes appear without a full reload.
+  // Store is oldest-first: UI uses reverse() / [length-1] for "newest".
   refreshTouchpoints: async (prospectRows, dealRows) => {
     const state = get();
     const prospects = prospectRows || state.prospects;
     const deals = dealRows || state.deals;
     const ids = prospects.map(p => p.id).filter(id => id != null);
     const dealIds = deals.map(d => d.id).filter(id => id != null);
+    const wsId = state.workspace?.id;
 
+    // Oldest → newest (matches manual addTouchpoint push + UI reverse())
     const sortTps = (rows) => (rows || []).slice().sort((a, b) => {
       const da = a.date || a.created_at || '';
       const db = b.date || b.created_at || '';
-      if (da !== db) return da < db ? 1 : -1;
+      if (da !== db) return da < db ? -1 : 1;
       const ca = a.created_at || '';
       const cb = b.created_at || '';
-      if (ca !== cb) return ca < cb ? 1 : -1;
-      return (b.id || 0) - (a.id || 0);
+      if (ca !== cb) return ca < cb ? -1 : 1;
+      return (a.id || 0) - (b.id || 0);
     });
 
-    if (ids.length > 0) {
-      const { data: tps } = await supabase
-        .from('touchpoints')
-        .select('*')
-        .in('prospect_id', ids)
-        .order('date', { ascending: false })
-        .order('created_at', { ascending: false })
-        .order('id', { ascending: false });
-      if (tps) {
-        const tpMap = {};
-        sortTps(tps).forEach(tp => {
-          if (!tpMap[tp.prospect_id]) tpMap[tp.prospect_id] = [];
-          tpMap[tp.prospect_id].push(tp);
-        });
-        set(s => ({
-          prospects: s.prospects.map(p => ({ ...p, touchpoints: tpMap[p.id] || [] })),
-        }));
+    // Chunked .in() — large workspaces blow PostgREST URL limits and fail silently
+    const fetchIn = async (col, allIds) => {
+      const out = [];
+      const CHUNK = 400;
+      for (let i = 0; i < allIds.length; i += CHUNK) {
+        const chunk = allIds.slice(i, i + CHUNK);
+        const { data, error } = await supabase.from('touchpoints').select('*').in(col, chunk);
+        if (error) { console.error('touchpoints fetch', error); continue; }
+        if (data) out.push(...data);
       }
+      return out;
+    };
+
+    // MCP rows always carry workspace_id; email-sync rows often have null — merge both
+    const fetchWs = async () => {
+      if (wsId == null) return [];
+      const { data, error } = await supabase.from('touchpoints').select('*').eq('workspace_id', wsId);
+      if (error) { console.error('touchpoints ws fetch', error); return []; }
+      return data || [];
+    };
+
+    const mergeById = (rows) => {
+      const m = new Map();
+      rows.forEach(r => { if (r?.id != null) m.set(r.id, r); });
+      return [...m.values()];
+    };
+
+    if (ids.length > 0 || wsId != null) {
+      const tps = mergeById([...(await fetchIn('prospect_id', ids)), ...(await fetchWs())])
+        .filter(tp => tp.prospect_id != null);
+      const tpMap = {};
+      sortTps(tps).forEach(tp => {
+        if (!tpMap[tp.prospect_id]) tpMap[tp.prospect_id] = [];
+        tpMap[tp.prospect_id].push(tp);
+      });
+      set(s => ({
+        prospects: s.prospects.map(p => ({ ...p, touchpoints: tpMap[p.id] || [] })),
+      }));
     }
 
-    if (dealIds.length > 0) {
-      const { data: dealTps } = await supabase
-        .from('touchpoints')
-        .select('*')
-        .in('deal_id', dealIds)
-        .order('date', { ascending: false })
-        .order('created_at', { ascending: false })
-        .order('id', { ascending: false });
-      if (dealTps) {
-        const dealTpMap = {};
-        sortTps(dealTps).forEach(tp => {
-          if (!dealTpMap[tp.deal_id]) dealTpMap[tp.deal_id] = [];
-          dealTpMap[tp.deal_id].push(tp);
-        });
-        set(s => ({
-          deals: s.deals.map(d => ({ ...d, touchpoints: dealTpMap[d.id] || [] })),
-        }));
-      }
+    if (dealIds.length > 0 || wsId != null) {
+      const dealTps = mergeById([...(await fetchIn('deal_id', dealIds)), ...(await fetchWs())])
+        .filter(tp => tp.deal_id != null);
+      const dealTpMap = {};
+      sortTps(dealTps).forEach(tp => {
+        if (!dealTpMap[tp.deal_id]) dealTpMap[tp.deal_id] = [];
+        dealTpMap[tp.deal_id].push(tp);
+      });
+      set(s => ({
+        deals: s.deals.map(d => ({ ...d, touchpoints: dealTpMap[d.id] || [] })),
+      }));
     }
   },
 
@@ -452,7 +471,7 @@ const useStore = create((set, get) => ({
       if (!ws) return;
       get().refreshTouchpoints().catch(() => {});
     };
-    setInterval(tick, 20000);
+    setInterval(tick, 10000);
     window.addEventListener('focus', tick);
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) tick();

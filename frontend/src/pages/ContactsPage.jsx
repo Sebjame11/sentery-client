@@ -97,7 +97,7 @@ export default function ContactsPage() {
 
   const lastTouch = (p) => {
     if (!p.touchpoints || p.touchpoints.length === 0) return null;
-    // Store is newest-first; pick newest by date/created_at (not array end)
+    // Store is oldest-first; last element is newest (also pick by date for safety)
     return p.touchpoints.reduce((a, b) => {
       const da = a.date || a.created_at || '';
       const db = b.date || b.created_at || '';

@@ -72,7 +72,7 @@ export default function Activity() {
     useEffect(() => {
         if (!workspace) return;
         const refresh = () => { loadRef.current(true); };
-        const iv = setInterval(refresh, 20000);
+        const iv = setInterval(refresh, 10000);
         window.addEventListener('focus', refresh);
         const onVis = () => { if (!document.hidden) refresh(); };
         document.addEventListener('visibilitychange', onVis);
