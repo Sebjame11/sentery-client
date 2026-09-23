@@ -1,4 +1,4 @@
--- Run this in Supabase SQL Editor (https://supabase.com/dashboard/project/akwinvaacrcpmjgkpjjl/sql/new)
+-- Run in CLIENT Supabase SQL Editor: https://supabase.com/dashboard/project/ekadvezzodagusteoyrv/sql/new
 
 -- ─── Workspace activity log ───
 create table if not exists public.activity_log (
