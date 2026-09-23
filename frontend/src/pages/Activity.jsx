@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import useStore from '../store/useStore';
 import { supabase } from '../lib/supabase';
 
@@ -65,6 +65,23 @@ export default function Activity() {
     }, [workspace, items.length]);
 
     useEffect(() => { setItems([]); setLoading(true); load(true); }, [workspace?.id]);
+
+    // Refetch when AI/MCP logs activity while this page is open
+    const loadRef = useRef(load);
+    loadRef.current = load;
+    useEffect(() => {
+        if (!workspace) return;
+        const refresh = () => { loadRef.current(true); };
+        const iv = setInterval(refresh, 20000);
+        window.addEventListener('focus', refresh);
+        const onVis = () => { if (!document.hidden) refresh(); };
+        document.addEventListener('visibilitychange', onVis);
+        return () => {
+            clearInterval(iv);
+            window.removeEventListener('focus', refresh);
+            document.removeEventListener('visibilitychange', onVis);
+        };
+    }, [workspace?.id]);
 
     const filtered = useMemo(() => {
         const uf = memberFilter === 'all' ? null : memberFilter;
@@ -145,7 +162,7 @@ export default function Activity() {
                                         <strong>{actor}</strong>
                                         {viaAi ? <span>'s AI assistant {summary}</span> : <span> {summary}</span>}
                                     </div>
-                                    <div className="activity-meta">{meta.label}{a.entity_name ? ' · ' + a.entity_name : ''}</div>
+                                    <div className="activity-meta">{a.user_name ? <strong>{a.user_name}</strong> + ' · ' : ''}{meta.label}{a.entity_name ? ' · ' + a.entity_name : ''}</div>
                                 </div>
                                 <div className="activity-time">{timeAgo(a.created_at)}</div>
                             </div>

@@ -97,7 +97,15 @@ export default function ContactsPage() {
 
   const lastTouch = (p) => {
     if (!p.touchpoints || p.touchpoints.length === 0) return null;
-    return p.touchpoints[p.touchpoints.length - 1];
+    // Store is newest-first; pick newest by date/created_at (not array end)
+    return p.touchpoints.reduce((a, b) => {
+      const da = a.date || a.created_at || '';
+      const db = b.date || b.created_at || '';
+      if (da !== db) return da > db ? a : b;
+      const ca = a.created_at || '';
+      const cb = b.created_at || '';
+      return cb > ca ? b : a;
+    });
   };
 
   return (

@@ -783,9 +783,9 @@ server.tool(
     {
       prospect_id: z.union([z.string(), z.number()]).optional(),
       deal_id: z.union([z.string(), z.number()]).optional(),
-      channel: z.enum(['Email', 'LinkedIn', 'Call', 'SMS', 'Calendar', 'Other']),
+      channel: z.enum(['Email', 'LinkedIn', 'Call', 'SMS', 'Calendar', 'Meeting', 'Other']),
       note: z.string().describe('What happened in the interaction'),
-      outcome: z.enum(['pending', 'replied', 'bounced', 'no_reply', 'unsubscribed']).optional(),
+      outcome: z.enum(['pending', 'replied', 'bounced', 'no_reply', 'unsubscribed', 'meeting', 'completed', 'no-reply', 'received', 'sent']).optional(),
     },
     async ({ prospect_id, deal_id, channel, note, outcome }) => {
       try {
@@ -794,6 +794,29 @@ server.tool(
         const entityLabel = prospect_id ? 'prospect' : 'deal';
         const entityId = prospect_id || deal_id;
         const entityCol = prospect_id ? 'prospect_id' : 'deal_id';
+
+        // Must belong to the active workspace — otherwise the row is invisible in the app
+        let entityRow = null;
+        if (prospect_id) {
+          const { data: p, error: pErr } = await sb.from('prospects')
+            .select('id, name, company, workspace_id')
+            .eq('id', prospect_id)
+            .eq('workspace_id', ctx.workspaceId)
+            .maybeSingle();
+          if (pErr) throw pErr;
+          if (!p) return { content: [{ type: 'text', text: `Prospect ${prospect_id} not found in the active workspace. Use search_prospects first.` }], isError: true };
+          entityRow = p;
+        } else {
+          const { data: d, error: dErr } = await sb.from('deals')
+            .select('id, name, workspace_id')
+            .eq('id', deal_id)
+            .eq('workspace_id', ctx.workspaceId)
+            .maybeSingle();
+          if (dErr) throw dErr;
+          if (!d) return { content: [{ type: 'text', text: `Deal ${deal_id} not found in the active workspace. Use search_deals first.` }], isError: true };
+          entityRow = d;
+        }
+
         const payload = {
           [entityCol]: entityId,
           channel,
@@ -803,19 +826,23 @@ server.tool(
           created_by: ctx.userId,
           workspace_id: ctx.workspaceId,
         };
-        let { data, error } = await sb.from('touchpoints').insert(payload).select('id, date, channel').single();
+        let { data, error } = await sb.from('touchpoints').insert(payload).select('id, date, channel, prospect_id, deal_id').single();
         // If touchpoints.workspace_id is missing in schema cache, retry without it
         if (error && error.code === 'PGRST204' && /workspace_id/i.test(error.message || '')) {
           delete payload.workspace_id;
-          ({ data, error } = await sb.from('touchpoints').insert(payload).select('id, date, channel').single());
+          ({ data, error } = await sb.from('touchpoints').insert(payload).select('id, date, channel, prospect_id, deal_id').single());
         }
         if (error) throw error;
+        // Verify the row is readable (catches silent FK/RLS issues)
+        const { data: verify } = await sb.from('touchpoints').select('id').eq('id', data.id).maybeSingle();
+        if (!verify) {
+          return { content: [{ type: 'text', text: `Error: touchpoint insert returned id ${data.id} but the row could not be read back. Not saved.` }], isError: true };
+        }
         (async () => {
           let name = null, company = null;
           try {
             if (prospect_id) {
-              const { data: p } = await sb.from('prospects').select('name, company').eq('id', prospect_id).maybeSingle();
-              name = p?.name; company = p?.company;
+              name = entityRow?.name; company = entityRow?.company;
             } else {
               const { data: d } = await sb.from('deals').select('name, companies(name)').eq('id', deal_id).maybeSingle();
               name = d?.name; company = d?.companies?.name;
@@ -829,7 +856,8 @@ server.tool(
             metadata: { channel, outcome: outcome || 'pending', [entityCol]: entityId },
           });
         })();
-        return { content: [{ type: 'text', text: `Touchpoint logged on ${data.date}: ${channel} on ${entityLabel}` }] };
+        const who = entityRow?.name ? ` on ${entityRow.name}` : '';
+        return { content: [{ type: 'text', text: `Touchpoint #${data.id} saved (${data.date}): ${channel}${who} [${entityLabel}]. It will appear in Sentery prospect activity and the Activity feed.` }] };
       } catch (err) {
         return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
       }

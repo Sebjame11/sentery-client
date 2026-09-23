@@ -378,45 +378,85 @@ const useStore = create((set, get) => ({
       })),
     });
 
-    // Load touchpoints for all prospects
-    const ids = (prospectsRes.data || []).map(p => p.id);
+    // Load touchpoints for all prospects + deals (also used by refreshTouchpoints)
+    await get().refreshTouchpoints(prospectsRes.data || [], dealsRes.data || []);
+    get()._ensureTouchpointSync();
+  },
+
+  // Re-fetch touchpoints so MCP/AI writes appear without a full reload
+  refreshTouchpoints: async (prospectRows, dealRows) => {
+    const state = get();
+    const prospects = prospectRows || state.prospects;
+    const deals = dealRows || state.deals;
+    const ids = prospects.map(p => p.id).filter(id => id != null);
+    const dealIds = deals.map(d => d.id).filter(id => id != null);
+
+    const sortTps = (rows) => (rows || []).slice().sort((a, b) => {
+      const da = a.date || a.created_at || '';
+      const db = b.date || b.created_at || '';
+      if (da !== db) return da < db ? 1 : -1;
+      const ca = a.created_at || '';
+      const cb = b.created_at || '';
+      if (ca !== cb) return ca < cb ? 1 : -1;
+      return (b.id || 0) - (a.id || 0);
+    });
+
     if (ids.length > 0) {
       const { data: tps } = await supabase
         .from('touchpoints')
         .select('*')
         .in('prospect_id', ids)
-        .order('date', { ascending: false });
+        .order('date', { ascending: false })
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false });
       if (tps) {
         const tpMap = {};
-        tps.forEach(tp => {
+        sortTps(tps).forEach(tp => {
           if (!tpMap[tp.prospect_id]) tpMap[tp.prospect_id] = [];
           tpMap[tp.prospect_id].push(tp);
         });
-        set(state => ({
-          prospects: state.prospects.map(p => ({ ...p, touchpoints: tpMap[p.id] || [] })),
+        set(s => ({
+          prospects: s.prospects.map(p => ({ ...p, touchpoints: tpMap[p.id] || [] })),
         }));
       }
     }
 
-    // Load touchpoints for all deals
-    const dealIds = (dealsRes.data || []).map(d => d.id);
     if (dealIds.length > 0) {
       const { data: dealTps } = await supabase
         .from('touchpoints')
         .select('*')
         .in('deal_id', dealIds)
-        .order('date', { ascending: false });
+        .order('date', { ascending: false })
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false });
       if (dealTps) {
         const dealTpMap = {};
-        dealTps.forEach(tp => {
+        sortTps(dealTps).forEach(tp => {
           if (!dealTpMap[tp.deal_id]) dealTpMap[tp.deal_id] = [];
           dealTpMap[tp.deal_id].push(tp);
         });
-        set(state => ({
-          deals: state.deals.map(d => ({ ...d, touchpoints: dealTpMap[d.id] || [] })),
+        set(s => ({
+          deals: s.deals.map(d => ({ ...d, touchpoints: dealTpMap[d.id] || [] })),
         }));
       }
     }
+  },
+
+  // Poll + window-focus refresh so touchpoints logged via MCP show up live
+  _touchpointSyncStarted: false,
+  _ensureTouchpointSync: () => {
+    if (get()._touchpointSyncStarted) return;
+    set({ _touchpointSyncStarted: true });
+    const tick = () => {
+      const ws = get().workspace;
+      if (!ws) return;
+      get().refreshTouchpoints().catch(() => {});
+    };
+    setInterval(tick, 20000);
+    window.addEventListener('focus', tick);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) tick();
+    });
   },
 
   // ─── Deals ───
