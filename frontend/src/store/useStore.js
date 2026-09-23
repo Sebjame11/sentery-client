@@ -52,7 +52,7 @@ const useStore = create((set, get) => ({
       window.history.pushState({}, '', url);
     }
   },
-  setAppPage: (page) => { set({ appPage: page }); localStorage.setItem('vn_appPage', page); },
+  setAppPage: (page) => { set({ appPage: page, detailId: null }); localStorage.setItem('vn_appPage', page); },
   setDetailId: (id) => set({ detailId: id }),
   setEditingSegment: (id) => set({ editingSegmentId: id, segmentsMode: id ? 'edit' : 'list' }),
   setSegmentsMode: (mode) => set({ segmentsMode: mode, editingSegmentId: mode === 'list' ? null : get().editingSegmentId }),
@@ -60,11 +60,50 @@ const useStore = create((set, get) => ({
   setDefaultWorkspace: async (wsId) => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
-    // Clear old default
-    await supabase.from('workspace_members').update({ is_default: false }).eq('user_id', user.id).eq('is_default', true);
-    // Set new default
-    if (wsId) await supabase.from('workspace_members').update({ is_default: true }).eq('user_id', user.id).eq('workspace_id', wsId);
+
+    // Prefer SECURITY DEFINER RPCs (no UPDATE RLS on workspace_members)
+    let rpcErr = null;
+    if (wsId) {
+      const { error } = await supabase.rpc('set_default_workspace', { target_ws_id: wsId });
+      rpcErr = error;
+    } else {
+      const { error } = await supabase.rpc('clear_default_workspace');
+      rpcErr = error;
+    }
+
+    // Fallback: direct update if RPC missing (e.g. migration not applied yet)
+    if (rpcErr && /Could not find the function|set_default_workspace|clear_default_workspace/i.test(rpcErr.message || '')) {
+      const clear = await supabase.from('workspace_members')
+        .update({ is_default: false }).eq('user_id', user.id).eq('is_default', true);
+      if (clear.error) rpcErr = clear.error;
+      if (wsId) {
+        const set = await supabase.from('workspace_members')
+          .update({ is_default: true }).eq('user_id', user.id).eq('workspace_id', wsId);
+        if (set.error) rpcErr = set.error;
+      }
+    } else if (rpcErr) {
+      console.error('setDefaultWorkspace failed:', rpcErr);
+      throw new Error(rpcErr.message || 'Could not save default workspace');
+    }
+
+    if (rpcErr && !wsId) {
+      // clearing: still allow local clear even if direct path failed
+      console.error('clearDefaultWorkspace failed:', rpcErr);
+    }
+
     set({ defaultWorkspaceId: wsId });
+    set(state => ({
+      workspaces: state.workspaces.map(w => ({ ...w, _isDefault: wsId != null && w.id === wsId })),
+    }));
+    // Local fallback until RPC migration is applied
+    try {
+      if (wsId) localStorage.setItem('sentery_default_workspace', String(wsId));
+      else localStorage.removeItem('sentery_default_workspace');
+    } catch (_) { /* ignore */ }
+    if (wsId) {
+      const ws = get().workspaces.find(w => w.id === wsId);
+      if (ws) await get().setCurrentWorkspace(ws);
+    }
   },
 
   // ─── Workspace ───
@@ -168,10 +207,21 @@ const useStore = create((set, get) => ({
       }));
 
       set({ workspaces: enriched });
+      let def = enriched.find(w => w._isDefault) || null;
+      if (!def) {
+        try {
+          const ls = Number(localStorage.getItem('sentery_default_workspace'));
+          if (ls) def = enriched.find(w => w.id === ls) || null;
+        } catch (_) { /* ignore */ }
+        if (def) {
+          set(state => ({
+            workspaces: state.workspaces.map(w => ({ ...w, _isDefault: w.id === def.id })),
+          }));
+        }
+      }
+      set({ defaultWorkspaceId: def?.id || null });
       if (enriched.length > 0 && !get().workspace) {
-        const def = enriched.find(w => w._isDefault);
         await get().setCurrentWorkspace(def || enriched[0]);
-        set({ defaultWorkspaceId: def?.id || null });
       } else {
         set({ workspaceLoading: false });
       }
@@ -973,6 +1023,7 @@ const useStore = create((set, get) => ({
       outcome: touchpoint.outcome,
       date: touchpoint.date || new Date().toISOString().slice(0, 10),
       created_by: (await supabase.auth.getUser()).data.user?.id,
+      workspace_id: get().workspace?.id ?? null,
     };
     // Support both prospect touchpoints and deal touchpoints
     if (touchpoint.dealId) {

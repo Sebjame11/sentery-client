@@ -14,7 +14,8 @@
 
 1. Create a new project at [supabase.com](https://supabase.com)
 2. Go to **SQL Editor** → paste the contents of `supabase-schema.sql` → run
-3. Note your:
+3. Also paste `backend/set-default-workspace.sql` → run (enables the default-workspace star; `workspace_members` has no UPDATE RLS policy)
+4. Note your:
    - Project URL: `https://XXXX.supabase.co`
    - Anon key (Settings → API → `anon` `public`)
    - Service role key (Settings → API → `service_role` `secret`)
